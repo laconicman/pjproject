@@ -3136,13 +3136,22 @@ static void regc_cb(struct pjsip_regc_cbparam *param)
 
     /* A 439 (First Hop Lacks Outbound Support) means the first hop does not
      * support SIP outbound (RFC 5626 section 6). Since use_rfc5626 is enabled
-     * by default, retrying the same request would only be answered with 439
-     * again, leaving the account permanently unregistered. Mark outbound as
-     * unavailable and retry without it, as permitted by RFC 5626 section
-     * 4.2.1. This mirrors what update_rfc5626_status() already does when a
-     * 2xx response does not confirm outbound support; cfg.use_rfc5626 is left
-     * untouched, so outbound is attempted again whenever the status is reset
-     * (e.g. by destroy_regc()).
+     * by default, the same request would only be answered with 439 again,
+     * leaving the account permanently unregistered. Retry without outbound,
+     * as permitted by RFC 5626 section 4.2.1.
+     *
+     * The regc must be torn down, not just flagged: the Contact carrying
+     * ;reg-id and ;+sip.instance is cached in acc->reg_contact, and the
+     * "Supported: outbound, path" header belongs to the existing regc, so a
+     * retry that reuses either would resend the identical rejected REGISTER.
+     * destroy_regc() clears both (and resets rfc5626_status, hence the order
+     * below); the next registration re-runs pjsua_regc_init(), whose
+     * update_regc_contact() returns early for OUTBOUND_NA and which only adds
+     * the Supported header for OUTBOUND_WANTED/OUTBOUND_ACTIVE.
+     *
+     * cfg.use_rfc5626 is deliberately left untouched, so the account's
+     * configured intent is preserved and outbound is attempted again whenever
+     * the status is reset later.
      */
     if (param->code == PJSIP_SC_FIRST_HOP_LACKS_OUTBOUND_SUPPORT &&
         acc->rfc5626_status != OUTBOUND_NA)
@@ -3150,6 +3159,10 @@ static void regc_cb(struct pjsip_regc_cbparam *param)
         PJ_LOG(3,(THIS_FILE,
                   "Acc %d: first hop lacks outbound support, retrying "
                   "registration without SIP outbound", acc->index));
+        destroy_regc(acc, PJ_TRUE);
+        /* destroy_regc() resets the status to OUTBOUND_UNKNOWN, so record
+         * the rejection after it, not before.
+         */
         acc->rfc5626_status = OUTBOUND_NA;
         schedule_reregistration(acc);
     }
