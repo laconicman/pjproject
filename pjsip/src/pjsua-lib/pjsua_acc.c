@@ -3134,11 +3134,31 @@ static void regc_cb(struct pjsip_regc_cbparam *param)
     /* Reaching this point means no contact rewrite, so reset the flag */
     acc->contact_rewritten = PJ_FALSE;
 
+    /* A 439 (First Hop Lacks Outbound Support) means the first hop does not
+     * support SIP outbound (RFC 5626 section 6). Since use_rfc5626 is enabled
+     * by default, retrying the same request would only be answered with 439
+     * again, leaving the account permanently unregistered. Mark outbound as
+     * unavailable and retry without it, as permitted by RFC 5626 section
+     * 4.2.1. This mirrors what update_rfc5626_status() already does when a
+     * 2xx response does not confirm outbound support; cfg.use_rfc5626 is left
+     * untouched, so outbound is attempted again whenever the status is reset
+     * (e.g. by destroy_regc()).
+     */
+    if (param->code == PJSIP_SC_FIRST_HOP_LACKS_OUTBOUND_SUPPORT &&
+        acc->rfc5626_status != OUTBOUND_NA)
+    {
+        PJ_LOG(3,(THIS_FILE,
+                  "Acc %d: first hop lacks outbound support, retrying "
+                  "registration without SIP outbound", acc->index));
+        acc->rfc5626_status = OUTBOUND_NA;
+        schedule_reregistration(acc);
+    }
+
     /* Check if we need to auto retry registration. Basically, registration
      * failure codes triggering auto-retry are those of temporal failures
      * considered to be recoverable in relatively short term.
      */
-    if (acc->cfg.reg_retry_interval && 
+    else if (acc->cfg.reg_retry_interval &&
         acc->ip_change_op != PJSUA_IP_CHANGE_OP_ACC_UPDATE_CONTACT &&
         (param->code == PJSIP_SC_REQUEST_TIMEOUT ||
          param->code == PJSIP_SC_INTERNAL_SERVER_ERROR ||
