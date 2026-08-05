@@ -2927,6 +2927,7 @@ static void handle_call_on_ip_change_cb(void *user_data)
  */
 static void regc_cb(struct pjsip_regc_cbparam *param)
 {
+    /* CIFuzz baseline control: comment-only, no behaviour change. */
 
     pjsua_acc *acc = (pjsua_acc*) param->token;
 
