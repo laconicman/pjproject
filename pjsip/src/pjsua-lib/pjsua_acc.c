@@ -2879,8 +2879,10 @@ on_return:
      * parameters, and push it to the regc so the change reaches the wire.
      *
      * PJSUA_CONTACT_REWRITE_UNREGISTER is deliberately not honoured here:
-     * the Contact URI is unchanged, so no binding is orphaned and there is
-     * nothing to unregister. See the commit message.
+     * the Contact URI is unchanged, so set_contact() matches it and no
+     * binding is orphaned -- unless add_xuid_param is enabled, which makes
+     * the URIs differ, as it already does for the other callers. See the
+     * commit message.
      */
     if (was_outbound && acc->rfc5626_status == OUTBOUND_NA) {
         pj_str_t prev_contact = acc->reg_contact;
