@@ -2865,7 +2865,32 @@ static void update_rfc5626_status(pjsua_acc *acc, pjsip_rx_data *rdata)
 
 on_return:
     if (acc->rfc5626_status != OUTBOUND_ACTIVE) {
+        pj_bool_t changed;
+
+        changed = (pj_strcmp(&acc->reg_contact, &acc->contact) != 0);
         acc->reg_contact = acc->contact;
+
+        /* Push it to the regc as well, or the change never reaches the
+         * wire. The regc keeps the Contact it was initialised with, and
+         * only acc_check_nat_addr(), auto_rereg_timer_cb() and
+         * pjsua_acc_update_contact_on_ip_change() ever update it; a plain
+         * refresh reaches none of them, so refresh REGISTERs went on
+         * carrying the reg-id and +sip.instance parameters that the server
+         * has just told us it does not use.
+         *
+         * The PJSUA_CONTACT_REWRITE_UNREGISTER treatment the other two
+         * callers apply does not belong here. That bit is for a Contact
+         * whose *address* changed, where the old binding is unreachable and
+         * a fresh Call-ID is wanted. Here only header parameters are
+         * dropped: the Contact URI itself is unchanged, so set_contact()
+         * matches it against the outgoing list with pjsip_uri_cmp() and
+         * removes it from the expires=0 list again. The next REGISTER
+         * therefore carries one Contact and updates the existing binding in
+         * place, with no unregister to sequence and no working registration
+         * to tear down.
+         */
+        if (changed && acc->regc)
+            pjsip_regc_update_contact(acc->regc, 1, &acc->reg_contact);
     }
     PJ_LOG(4,(THIS_FILE, "SIP outbound status for acc %d is %s",
                          acc->index, (acc->rfc5626_status==OUTBOUND_ACTIVE?
