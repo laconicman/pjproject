@@ -2883,6 +2883,12 @@ on_return:
      * for a changed Contact address needing a fresh Call-ID, whereas only
      * header params change here and pjsip_regc_update_contact() settles the
      * old binding within the next REGISTER on its own.
+     *
+     * The ";ob" URI param and the Supported header are left alone. Both
+     * belong to the Contact address and the regc respectively, and re #1020
+     * scoped this to reg-id and +sip.instance. A server that simply does not
+     * confirm outbound has said less than a 439, which does reject the whole
+     * mechanism and is handled elsewhere.
      */
     if (was_outbound && acc->rfc5626_status == OUTBOUND_NA) {
         pj_str_t prev_contact = acc->reg_contact;
