@@ -2972,6 +2972,15 @@ static void update_rfc5626_status(pjsua_acc *acc, pjsip_rx_data *rdata)
     pjsip_require_hdr *hreq;
     const pj_str_t STR_OUTBOUND = {"outbound", 8};
     unsigned i;
+    pj_bool_t was_outbound;
+
+    /* Did the REGISTER being answered actually offer outbound? Note
+     * update_regc_contact() leaves rfc5626_status at OUTBOUND_NA when
+     * use_rfc5626 is disabled, so this is not the same as "outbound is not
+     * active now".
+     */
+    was_outbound = (acc->rfc5626_status == OUTBOUND_WANTED ||
+                    acc->rfc5626_status == OUTBOUND_ACTIVE);
 
     if (acc->rfc5626_status == OUTBOUND_UNKNOWN) {
         goto on_return;
@@ -2994,8 +3003,41 @@ static void update_rfc5626_status(pjsua_acc *acc, pjsip_rx_data *rdata)
     acc->rfc5626_status = OUTBOUND_NA;
 
 on_return:
-    if (acc->rfc5626_status != OUTBOUND_ACTIVE) {
-        acc->reg_contact = acc->contact;
+    /* Outbound was offered but not confirmed. Rebuild the registration
+     * Contact -- rfc5626_status is OUTBOUND_NA now, so reg-id and
+     * +sip.instance are dropped while the REGISTER-only params are kept --
+     * and push it to the regc, which otherwise keeps the Contact it was
+     * initialised with and goes on advertising outbound on every refresh.
+     *
+     * PJSUA_CONTACT_REWRITE_UNREGISTER is not honoured here: that bit is
+     * for a changed Contact address needing a fresh Call-ID, whereas only
+     * header params change here and pjsip_regc_update_contact() settles the
+     * old binding within the next REGISTER on its own.
+     *
+     * The ";ob" URI param and the Supported header are left alone. Both
+     * belong to the Contact address and the regc respectively, and re #1020
+     * scoped this to reg-id and +sip.instance. A server that simply does not
+     * confirm outbound has said less than a 439, which does reject the whole
+     * mechanism and is handled elsewhere.
+     */
+    if (was_outbound && acc->rfc5626_status == OUTBOUND_NA) {
+        pj_str_t prev_contact = acc->reg_contact;
+
+        update_regc_contact(acc);
+
+        if (acc->regc && pj_strcmp(&prev_contact, &acc->reg_contact) != 0) {
+            pj_status_t rc;
+
+            rc = pjsip_regc_update_contact(acc->regc, 1, &acc->reg_contact);
+            if (rc != PJ_SUCCESS) {
+                /* set_contact() may have already moved the live Contacts to
+                 * the expires=0 list before failing, which would leave the
+                 * next refresh with none.
+                 */
+                pjsua_perror(THIS_FILE, "Failed updating registration Contact "
+                                        "after SIP outbound was declined", rc);
+            }
+        }
     }
     PJ_LOG(4,(THIS_FILE, "SIP outbound status for acc %d is %s",
                          acc->index, (acc->rfc5626_status==OUTBOUND_ACTIVE?
