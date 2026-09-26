@@ -2149,11 +2149,16 @@ PJ_DEF(pj_status_t) pjsua_acc_set_online_status2( pjsua_acc_id acc_id,
 
 /* Create reg_contact, adding SIP outbound params and other REGISTER specific
  * Contact params, i.e: reg_contact_params, reg_contact_uri_params.
+ *
+ * With push, a changed reg_contact is also loaded into the regc, so the two
+ * cannot diverge. Pass PJ_FALSE where the regc gets the Contact another way:
+ * pjsip_regc_init(), or param->contact in regc_tsx_cb().
  */
-static void update_regc_contact(pjsua_acc *acc)
+static void update_regc_contact(pjsua_acc *acc, pj_bool_t push)
 {
     pjsua_acc_config *acc_cfg = &acc->cfg;
     pj_bool_t need_outbound = PJ_FALSE;
+    pj_str_t prev_contact = acc->reg_contact;
     const pj_str_t tcp_param = pj_str(";transport=tcp");
     const pj_str_t tls_param = pj_str(";transport=tls");
 
@@ -2297,6 +2302,18 @@ done:
               */
              acc->reg_contact = acc->contact;
              acc->rfc5626_status = OUTBOUND_NA;
+        }
+    }
+
+    if (push && acc->regc && pj_strcmp(&prev_contact, &acc->reg_contact)) {
+        pj_status_t status;
+
+        status = pjsip_regc_update_contact(acc->regc, 1, &acc->reg_contact);
+        if (status != PJ_SUCCESS) {
+            /* set_contact() validates first: the regc kept prev_contact */
+            pjsua_perror(THIS_FILE, "Failed updating registration Contact",
+                         status);
+            acc->reg_contact = prev_contact;
         }
     }
 }
@@ -2644,7 +2661,9 @@ static pj_bool_t acc_check_nat_addr(pjsua_acc *acc,
 
         pj_strdup2_with_null(acc->pool, &acc->contact, tmp);
 
-        update_regc_contact(acc);
+        /* With ALWAYS_UPDATE the regc applies param->contact itself */
+        update_regc_contact(acc, contact_rewrite_method !=
+                                 PJSUA_CONTACT_REWRITE_ALWAYS_UPDATE);
 
         /* Always update, by https://github.com/pjsip/pjproject/issues/864. */
         /* Since the Via address will now be overwritten to the correct
@@ -2656,12 +2675,6 @@ static pj_bool_t acc_check_nat_addr(pjsua_acc *acc,
         tp->local_name.port = rport;
          */
 
-    }
-
-    if (contact_rewrite_method == PJSUA_CONTACT_REWRITE_NO_UNREG &&
-        acc->regc != NULL)
-    {
-        pjsip_regc_update_contact(acc->regc, 1, &acc->reg_contact);
     }
 
     /* Perform new registration */
@@ -2973,6 +2986,11 @@ static void update_rfc5626_status(pjsua_acc *acc, pjsip_rx_data *rdata)
     pjsip_require_hdr *hreq;
     const pj_str_t STR_OUTBOUND = {"outbound", 8};
     unsigned i;
+    pj_bool_t was_outbound;
+
+    /* Whether the REGISTER just answered carried reg-id */
+    was_outbound = (acc->rfc5626_status == OUTBOUND_WANTED ||
+                    acc->rfc5626_status == OUTBOUND_ACTIVE);
 
     if (acc->rfc5626_status == OUTBOUND_UNKNOWN) {
         goto on_return;
@@ -2995,9 +3013,12 @@ static void update_rfc5626_status(pjsua_acc *acc, pjsip_rx_data *rdata)
     acc->rfc5626_status = OUTBOUND_NA;
 
 on_return:
-    if (acc->rfc5626_status != OUTBOUND_ACTIVE) {
-        acc->reg_contact = acc->contact;
-    }
+    /* Unconfirmed outbound is not in use (RFC 5626 section 6), so stop
+     * sending reg-id/+sip.instance. Supported: outbound stays, as section
+     * 4.2.1 requires of a UA that supports it.
+     */
+    if (was_outbound && acc->rfc5626_status == OUTBOUND_NA)
+        update_regc_contact(acc, PJ_TRUE);
     PJ_LOG(4,(THIS_FILE, "SIP outbound status for acc %d is %s",
                          acc->index, (acc->rfc5626_status==OUTBOUND_ACTIVE?
                                          "active": "not active")));
@@ -3071,18 +3092,11 @@ static void regc_cb(struct pjsip_regc_cbparam *param)
         return;
     }
 
-    /* Whether the REGISTER this callback reports on could have advertised SIP
-     * outbound. Captured up front because destroy_regc() below clears
-     * acc->contact. Used to tell a 439 that rejects our outbound from one
-     * returned for an unrelated reason.
-     *
-     * This mirrors the test update_regc_contact() uses to decide whether to
-     * emit outbound at all. rfc5626_status is not usable here even if read
-     * before destroy_regc() resets it: update_rfc5626_status() drops it to
-     * OUTBOUND_NA on a 200 that omits "Require: outbound" -- the normal reply
-     * from a registrar without outbound support -- while the regc goes on
-     * sending the reg-id Contact and option tag it was initialised with, so a
-     * later 439 would be missed and the account left unregistered.
+    /* Whether the REGISTER this callback reports on may have advertised SIP
+     * outbound, captured before destroy_regc() below clears acc->contact.
+     * Wider than rfc5626_status on purpose: once outbound goes unconfirmed
+     * the refresh drops reg-id but keeps "Supported: outbound", and a 439 to
+     * it is still best answered by withdrawing that tag and retrying.
      */
     sent_outbound = acc->cfg.use_rfc5626 &&
                     (pj_stristr(&acc->contact, &tcp_param) != NULL ||
@@ -3477,7 +3491,7 @@ static pj_status_t pjsua_regc_init(int acc_id)
         }
 
         pj_strdup_with_null(acc->pool, &acc->contact, &tmp_contact);
-        update_regc_contact(acc);
+        update_regc_contact(acc, PJ_FALSE);
     }
 
     status = pjsip_regc_init( acc->regc,
@@ -5424,11 +5438,7 @@ static void auto_rereg_timer_cb(pj_timer_heap_t *th, pj_timer_entry *te)
                     pj_strncpy_with_null(&acc->contact, &tmp_contact,
                                          PJSIP_MAX_URL_SIZE);
                 }
-                update_regc_contact(acc);
-                if (acc->regc) {
-                    pjsip_regc_update_contact(acc->regc, 1,
-                                              &acc->reg_contact);
-                }
+                update_regc_contact(acc, PJ_TRUE);
             }
         }
         pj_pool_release(pool);
