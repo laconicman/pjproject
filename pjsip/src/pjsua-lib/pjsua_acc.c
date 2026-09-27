@@ -2149,10 +2149,8 @@ PJ_DEF(pj_status_t) pjsua_acc_set_online_status2( pjsua_acc_id acc_id,
 
 /* Create reg_contact, adding SIP outbound params and other REGISTER specific
  * Contact params, i.e: reg_contact_params, reg_contact_uri_params.
- *
- * With push, a changed reg_contact is also loaded into the regc, so the two
- * cannot diverge. Pass PJ_FALSE where the regc gets the Contact another way:
- * pjsip_regc_init(), or param->contact in regc_tsx_cb().
+ * With push, also load it into the regc; pass PJ_FALSE where the regc takes
+ * it from pjsip_regc_init() or regc_tsx_cb()'s param->contact instead.
  */
 static void update_regc_contact(pjsua_acc *acc, pj_bool_t push)
 {
@@ -2305,7 +2303,7 @@ done:
         }
     }
 
-    if (push && acc->regc && pj_strcmp(&prev_contact, &acc->reg_contact)) {
+    if (push && acc->regc) {
         pj_status_t status;
 
         status = pjsip_regc_update_contact(acc->regc, 1, &acc->reg_contact);
@@ -3013,10 +3011,7 @@ static void update_rfc5626_status(pjsua_acc *acc, pjsip_rx_data *rdata)
     acc->rfc5626_status = OUTBOUND_NA;
 
 on_return:
-    /* Unconfirmed outbound is not in use (RFC 5626 section 6), so stop
-     * sending reg-id/+sip.instance. Supported: outbound stays, as section
-     * 4.2.1 requires of a UA that supports it.
-     */
+    /* Unconfirmed outbound is not in use (RFC 5626 section 6): drop reg-id */
     if (was_outbound && acc->rfc5626_status == OUTBOUND_NA)
         update_regc_contact(acc, PJ_TRUE);
     PJ_LOG(4,(THIS_FILE, "SIP outbound status for acc %d is %s",
@@ -3092,11 +3087,9 @@ static void regc_cb(struct pjsip_regc_cbparam *param)
         return;
     }
 
-    /* Whether the REGISTER this callback reports on may have advertised SIP
-     * outbound, captured before destroy_regc() below clears acc->contact.
-     * Wider than rfc5626_status on purpose: once outbound goes unconfirmed
-     * the refresh drops reg-id but keeps "Supported: outbound", and a 439 to
-     * it is still best answered by withdrawing that tag and retrying.
+    /* Whether this REGISTER may have offered outbound, read before
+     * destroy_regc() clears acc->contact. Not rfc5626_status: a refresh
+     * without reg-id still sends "Supported: outbound", so a 439 is ours.
      */
     sent_outbound = acc->cfg.use_rfc5626 &&
                     (pj_stristr(&acc->contact, &tcp_param) != NULL ||
