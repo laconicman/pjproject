@@ -62,13 +62,11 @@ typedef struct pj_ssl_sock_t pj_ssl_sock_t;
  *   (\a cert_direct) and the OCSP stapling response (\a ocsp_resp_buf).
  * - GnuTLS and mbedTLS honour the file and buffer fields; \a cert_direct and
  *   \a ocsp_resp_buf are not supported.
- * - The Apple backends take \a cert_file and \a cert_buf as a PKCS#12 bundle
- *   carrying the certificate together with its private key, plus
- *   \a CA_file/\a CA_path/\a CA_buf; the \a privkey_* fields are ignored with
- *   a log message, except \a privkey_pass which is used as the bundle
- *   passphrase. On iOS the bundle is imported via SecPKCS12Import(), which is
- *   self-contained; on Mac the import goes through SecItemImport() and the
- *   private key is resolved from the keychain instead.
+ * - The Apple backends take \a cert_file or \a cert_buf: on iOS a PKCS#12
+ *   bundle holding the private key; on Mac PKCS#12, a PEM sequence or a DER
+ *   certificate, with the private key looked up in the keychain. The CA
+ *   fields are honoured, \a privkey_pass is the import passphrase, and the
+ *   other \a privkey_* fields are ignored with a log message.
  * - Schannel honours only the lookup criteria: the certificate is found in
  *   the Windows certificate store, not loaded from supplied fields.
  */

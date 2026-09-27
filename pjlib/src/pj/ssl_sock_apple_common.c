@@ -287,10 +287,8 @@ static void get_cert_info(pj_pool_t *pool, pj_ssl_cert_info *ci,
         }
     }
 
-    /* Subject CN is part of the update check, so read it now.
-     * SecCertificateCopySubjectSummary() must not be used here: it returns
-     * a display summary, which falls back to another attribute such as the
-     * email address when the subject carries no Common Name. */
+    /* Subject CN, part of the update check. Not the subject summary: that
+     * falls back to another attribute, e.g. the email, when there is no CN. */
     buf2[0] = '\0';
     if (SecCertificateCopyCommonName(cert, &str) == errSecSuccess && str) {
         cfstr_to_cstr(str, buf2, sizeof(buf2));
@@ -313,9 +311,8 @@ static void get_cert_info(pj_pool_t *pool, pj_ssl_cert_info *ci,
         return;
     }
 
-    /* Update cert info. When the caller passed the dedicated info pool,
-     * reset it first so a refresh reclaims the previous strings instead
-     * of accumulating them across renegotiations. */
+    /* Update cert info, first reclaiming the dedicated info pool so strings
+     * do not accumulate across renegotiations. */
     if (reclaim)
         pj_pool_reset(pool);
 
