@@ -94,6 +94,31 @@ static const char CERT_LONGSER_DER[] =
     "042e769b30045c54e377fed3dc77fbabf4356b771dd7c361dae982468d0f2a5dbf5397dbe965"
     "7368";
 
+/* Same issuer and subject CN, serials 01 and 01 00 */
+static const char CERT_SER01_DER[] =
+    "3082016f30820114a003020102020101300a06082a8648ce3d04030230163114301206035504"
+    "030c0b73657269616c2d74657374301e170d3236303932373136343233315a170d3336303932"
+    "343136343233315a30163114301206035504030c0b73657269616c2d74657374305930130607"
+    "2a8648ce3d020106082a8648ce3d0301070342000455a2b5862fda5403ea0c5d73235b10cc9c"
+    "2134e74e0e47ae96f410c028c35b07913affa4c6244c0329a0bf2f247e4ad357fc41c07d3ce0"
+    "d273f2635d13bf8056a3533051301d0603551d0e041604148ba16c660751212660d2e4813e27"
+    "4cac6bec2dbf301f0603551d230418301680148ba16c660751212660d2e4813e274cac6bec2d"
+    "bf300f0603551d130101ff040530030101ff300a06082a8648ce3d0403020349003046022100"
+    "fbddd8613c39c89647904585cd6cb0f50dfab994c25289d0019dfd91a95e12aa022100a12242"
+    "67d2c8e8f5c2c9c7e870765af046fb54ebedf0bb89a1b3829887c4022f";
+
+static const char CERT_SER0100_DER[] =
+    "3082017030820115a00302010202020100300a06082a8648ce3d040302301631143012060355"
+    "04030c0b73657269616c2d74657374301e170d3236303932373136343233315a170d33363039"
+    "32353136343233315a30163114301206035504030c0b73657269616c2d746573743059301306"
+    "072a8648ce3d020106082a8648ce3d0301070342000455a2b5862fda5403ea0c5d73235b10cc"
+    "9c2134e74e0e47ae96f410c028c35b07913affa4c6244c0329a0bf2f247e4ad357fc41c07d3c"
+    "e0d273f2635d13bf8056a3533051301d0603551d0e041604148ba16c660751212660d2e4813e"
+    "274cac6bec2dbf301f0603551d230418301680148ba16c660751212660d2e4813e274cac6bec"
+    "2dbf300f0603551d130101ff040530030101ff300a06082a8648ce3d04030203490030460221"
+    "00bfb3abb080d3f0526629f34922cc549bf729fc303fbdb90ff80ea305167a8d4a022100bb27"
+    "4a05a9aedddf92c3fd394ac60df38655c1a57e45eb85660a19d385c8518c";
+
 static int hexval(char c)
 {
     if (c >= '0' && c <= '9') return c - '0';
@@ -248,6 +273,22 @@ static int refresh_tests(void)
                "refreshes must not grow the pool",
                pj_pool_release(info_pool); return -22);
     pj_pool_release(info_pool);
+
+    /* Serial 01 00 after 01, same names: must refresh. */
+    info_pool = pj_pool_create(mem, "ci3", 512, 512, NULL);
+    pj_bzero(&ci, sizeof(ci));
+    cert = cert_from_hex(CERT_SER01_DER);
+    if (!cert) { pj_pool_release(info_pool); return -23; }
+    get_cert_info(info_pool, &ci, cert, PJ_TRUE);
+    CFRelease(cert);
+    cert = cert_from_hex(CERT_SER0100_DER);
+    if (!cert) { pj_pool_release(info_pool); return -24; }
+    get_cert_info(info_pool, &ci, cert, PJ_TRUE);
+    CFRelease(cert);
+    pj_pool_release(info_pool);
+    PJ_TEST_TRUE(ci.serial_no[sizeof(ci.serial_no) - 2] == 0x01 &&
+                 ci.serial_no[sizeof(ci.serial_no) - 1] == 0x00,
+                 "trailing-zero serial must refresh", return -25);
 
     return 0;
 }

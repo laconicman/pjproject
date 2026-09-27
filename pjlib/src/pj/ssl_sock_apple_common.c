@@ -271,9 +271,8 @@ static void get_cert_info(pj_pool_t *pool, pj_ssl_cert_info *ci,
 #endif
     cfstr_to_cstr(issuer_info, buf, bufsize);
 
-    /* Get serial no, zero-padded to the fixed width of ci->serial_no so
-     * the comparison below covers the whole field: a shorter serial that
-     * is a prefix of the stored one must not compare equal. */
+    /* Get serial no, right-aligned as the OpenSSL backend stores it, so a
+     * prefix or a zero-extended serial does not compare equal. */
     if (__builtin_available(macOS 10.13, iOS 11.0, *)) {
         CFDataRef serial = SecCertificateCopySerialNumberData(cert, NULL);
         if (serial) {
@@ -282,7 +281,8 @@ static void get_cert_info(pj_pool_t *pool, pj_ssl_cert_info *ci,
                 len = sizeof(serial_no);
                 serial_truncated = PJ_TRUE;
             }
-            pj_memcpy(serial_no, CFDataGetBytePtr(serial), len);
+            pj_memcpy(serial_no + sizeof(serial_no) - len,
+                      CFDataGetBytePtr(serial), len);
             CFRelease(serial);
         }
     }
@@ -298,9 +298,8 @@ static void get_cert_info(pj_pool_t *pool, pj_ssl_cert_info *ci,
         str = NULL;
     }
 
-    /* Check if the contents need to be updated. A serial longer than the
-     * stored field can never be proven equal to it — refresh rather than
-     * collide on the shared prefix. */
+    /* Check if the contents need to be updated; a truncated serial cannot
+     * be proven equal, so it always refreshes. */
     update_needed = pj_strcmp2(&ci->issuer.info, buf) ||
                     pj_strcmp2(&ci->subject.cn, buf2) ||
                     pj_memcmp(ci->serial_no, serial_no, sizeof(serial_no)) ||
