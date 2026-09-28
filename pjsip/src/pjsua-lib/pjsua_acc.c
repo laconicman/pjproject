@@ -2157,6 +2157,7 @@ static void update_regc_contact(pjsua_acc *acc, pj_bool_t push)
     pjsua_acc_config *acc_cfg = &acc->cfg;
     pj_bool_t need_outbound = PJ_FALSE;
     pj_str_t prev_contact = acc->reg_contact;
+    unsigned prev_status = acc->rfc5626_status;
     const pj_str_t tcp_param = pj_str(";transport=tcp");
     const pj_str_t tls_param = pj_str(";transport=tls");
 
@@ -2312,6 +2313,7 @@ done:
             pjsua_perror(THIS_FILE, "Failed updating registration Contact",
                          status);
             acc->reg_contact = prev_contact;
+            acc->rfc5626_status = prev_status;
         }
     }
 }
@@ -2659,9 +2661,8 @@ static pj_bool_t acc_check_nat_addr(pjsua_acc *acc,
 
         pj_strdup2_with_null(acc->pool, &acc->contact, tmp);
 
-        /* With ALWAYS_UPDATE the regc applies param->contact itself */
-        update_regc_contact(acc, contact_rewrite_method !=
-                                 PJSUA_CONTACT_REWRITE_ALWAYS_UPDATE);
+        update_regc_contact(acc, contact_rewrite_method ==
+                                 PJSUA_CONTACT_REWRITE_NO_UNREG);
 
         /* Always update, by https://github.com/pjsip/pjproject/issues/864. */
         /* Since the Via address will now be overwritten to the correct
@@ -2986,7 +2987,7 @@ static void update_rfc5626_status(pjsua_acc *acc, pjsip_rx_data *rdata)
     unsigned i;
     pj_bool_t was_outbound;
 
-    /* Whether the REGISTER just answered carried reg-id */
+    /* Outbound was wanted or active when this REGISTER was sent */
     was_outbound = (acc->rfc5626_status == OUTBOUND_WANTED ||
                     acc->rfc5626_status == OUTBOUND_ACTIVE);
 
@@ -5690,12 +5691,13 @@ pj_status_t pjsua_acc_update_contact_on_ip_change(pjsua_acc *acc)
                 update_keep_alive(acc, PJ_FALSE, NULL);
 
                 status = pjsua_regc_init(acc->index);
-                if (need_unreg || no_unreg)
-                    pjsip_regc_update_contact(acc->regc, 1, &old_reg_contact);
-                if (no_unreg)
-                    pjsip_regc_update_contact(acc->regc, 1, &acc->reg_contact);
-
                 if (status == PJ_SUCCESS) {
+                    if (need_unreg || no_unreg)
+                        pjsip_regc_update_contact(acc->regc, 1,
+                                                  &old_reg_contact);
+                    if (no_unreg)
+                        pjsip_regc_update_contact(acc->regc, 1,
+                                                  &acc->reg_contact);
                     status = pjsua_acc_set_registration(acc->index, !need_unreg);
                     if (status == PJ_SUCCESS) {
                         return status;
