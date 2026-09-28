@@ -38,6 +38,18 @@
  */
 #define MAX_CERT_FILE_SIZE      (1024 * 1024)
 
+/* The private key comes with the certificate, never from privkey_*. */
+static void log_privkey_ignored(void)
+{
+#if TARGET_OS_IPHONE
+    PJ_LOG(3, (THIS_FILE, "Ignoring supplied private key. The key must "
+                          "be inside the PKCS#12 certificate bundle."));
+#else
+    PJ_LOG(3, (THIS_FILE, "Ignoring supplied private key. Private key "
+                          "must be placed in the keychain instead."));
+#endif
+}
+
 static pj_status_t create_data_from_file(CFDataRef *data,
                                          pj_str_t *fname, pj_str_t *path)
 {

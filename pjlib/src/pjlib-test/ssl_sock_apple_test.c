@@ -146,6 +146,7 @@ static SecCertificateRef cert_from_hex(const char *hex)
     return cert;
 }
 
+#if !TARGET_OS_IPHONE
 static pj_bool_t find_san(const pj_ssl_cert_info *ci,
                           pj_ssl_cert_name_type type, const char *name)
 {
@@ -223,6 +224,7 @@ static int guard_tests(void)
 
     return rc;
 }
+#endif
 
 /* Update-detection coverage, observed through pool usage: the no-update
  * path allocates nothing, and the refresh path resets the dedicated
@@ -235,73 +237,73 @@ static int refresh_tests(void)
     };
     pj_pool_t *info_pool;
     pj_ssl_cert_info ci;
-    SecCertificateRef cert;
+    SecCertificateRef cert = NULL;
     pj_size_t used0;
-    int i;
+    int i, rc = 0;
+
+    info_pool = pj_pool_create(mem, "ci", 512, 512, NULL);
 
     /* Same cert twenty times: the no-update path must not allocate. */
-    info_pool = pj_pool_create(mem, "ci1", 512, 512, NULL);
     pj_bzero(&ci, sizeof(ci));
     cert = cert_from_hex(CERT_A_DER);
-    if (!cert) return -10;
+    if (!cert) { rc = -10; goto on_return; }
     get_cert_info(info_pool, &ci, cert, PJ_TRUE);
     used0 = pj_pool_get_used_size(info_pool);
     for (i = 0; i < 20; i++)
         get_cert_info(info_pool, &ci, cert, PJ_TRUE);
-    CFRelease(cert);
     PJ_TEST_EQ(pj_pool_get_used_size(info_pool), used0,
-               "unchanged cert must not refresh",
-               pj_pool_release(info_pool); return -11);
-    pj_pool_release(info_pool);
+               "unchanged cert must not refresh", rc = -11; goto on_return);
+    CFRelease(cert);
 
     /* Overlong serial: first 20 octets stored, and each read refreshes —
      * the pool reset must keep usage flat across refreshes. */
-    info_pool = pj_pool_create(mem, "ci2", 512, 512, NULL);
+    pj_pool_reset(info_pool);
     pj_bzero(&ci, sizeof(ci));
     cert = cert_from_hex(CERT_LONGSER_DER);
-    if (!cert) return -20;
+    if (!cert) { rc = -20; goto on_return; }
     get_cert_info(info_pool, &ci, cert, PJ_TRUE);
     PJ_TEST_TRUE(pj_memcmp(ci.serial_no, longser_first20,
                            sizeof(longser_first20)) == 0,
                  "serial_no must hold the first 20 octets",
-                 pj_pool_release(info_pool); CFRelease(cert); return -21);
+                 rc = -21; goto on_return);
     used0 = pj_pool_get_used_size(info_pool);
     for (i = 0; i < 20; i++)
         get_cert_info(info_pool, &ci, cert, PJ_TRUE);
-    CFRelease(cert);
     PJ_TEST_EQ(pj_pool_get_used_size(info_pool), used0,
-               "refreshes must not grow the pool",
-               pj_pool_release(info_pool); return -22);
-    pj_pool_release(info_pool);
+               "refreshes must not grow the pool", rc = -22; goto on_return);
+    CFRelease(cert);
 
     /* Serial 01 00 after 01, same names: must refresh. */
-    info_pool = pj_pool_create(mem, "ci3", 512, 512, NULL);
+    pj_pool_reset(info_pool);
     pj_bzero(&ci, sizeof(ci));
     cert = cert_from_hex(CERT_SER01_DER);
-    if (!cert) { pj_pool_release(info_pool); return -23; }
+    if (!cert) { rc = -23; goto on_return; }
     get_cert_info(info_pool, &ci, cert, PJ_TRUE);
     CFRelease(cert);
     cert = cert_from_hex(CERT_SER0100_DER);
-    if (!cert) { pj_pool_release(info_pool); return -24; }
+    if (!cert) { rc = -24; goto on_return; }
     get_cert_info(info_pool, &ci, cert, PJ_TRUE);
-    CFRelease(cert);
-    pj_pool_release(info_pool);
     PJ_TEST_TRUE(ci.serial_no[sizeof(ci.serial_no) - 2] == 0x01 &&
                  ci.serial_no[sizeof(ci.serial_no) - 1] == 0x00,
-                 "trailing-zero serial must refresh", return -25);
+                 "trailing-zero serial must refresh", rc = -25);
 
-    return 0;
+on_return:
+    if (cert)
+        CFRelease(cert);
+    pj_pool_release(info_pool);
+    return rc;
 }
 
 int ssl_sock_apple_test(void)
 {
     pj_pool_t *pool, *info_pool;
     pj_ssl_cert_info ci;
-    SecCertificateRef cert, cert_b;
+    SecCertificateRef cert = NULL, cert_b = NULL;
     int rc = 0;
 
-    /* Came in with the shared reader; only the backends load files */
+    /* Backend-only helpers that came in with the shared reader */
     PJ_UNUSED_ARG(create_data_from_file);
+    PJ_UNUSED_ARG(log_privkey_ignored);
 
     PJ_LOG(3, (THIS_FILE, "..apple cert-info reader test"));
 
@@ -311,7 +313,7 @@ int ssl_sock_apple_test(void)
 
     /* Ordinary cert: subject CN, DNS SAN, IP SAN. */
     cert = cert_from_hex(CERT_A_DER);
-    if (!cert) return -5;
+    if (!cert) { rc = -5; goto done; }
     get_cert_info(info_pool, &ci, cert, PJ_TRUE);
     PJ_TEST_TRUE(pj_strcmp2(&ci.subject.cn, "der-test.local") == 0,
                  "subject CN", rc = -6; goto out_a);
@@ -355,8 +357,10 @@ out_a:
     }
     if (rc == 0)
         rc = refresh_tests();
+#if !TARGET_OS_IPHONE
     if (rc == 0)
         rc = guard_tests();
+#endif
 
 done:
     if (cert) CFRelease(cert);

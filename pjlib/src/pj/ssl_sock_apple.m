@@ -429,15 +429,7 @@ static pj_status_t create_identity_from_cert(applessl_sock_t *assock,
     *p_identity = NULL;
 
     if (cert->privkey_file.slen || cert->privkey_buf.slen)
-    {
-#if TARGET_OS_IPHONE
-        PJ_LOG(3, (THIS_FILE, "Ignoring supplied private key. The key must "
-                              "be inside the PKCS#12 certificate bundle."));
-#else
-        PJ_LOG(3, (THIS_FILE, "Ignoring supplied private key. Private key "
-                              "must be placed in the keychain instead."));
-#endif
-    }
+        log_privkey_ignored();
 
     if (cert->cert_file.slen) {
         status = create_data_from_file(&cert_data, &cert->cert_file, NULL);
