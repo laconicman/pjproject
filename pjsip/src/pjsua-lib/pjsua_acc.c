@@ -2151,8 +2151,9 @@ PJ_DEF(pj_status_t) pjsua_acc_set_online_status2( pjsua_acc_id acc_id,
  * Contact params, i.e: reg_contact_params, reg_contact_uri_params.
  * With push, also load it into the regc; pass PJ_FALSE where the regc takes
  * it from pjsip_regc_init() or regc_tsx_cb()'s param->contact instead.
+ * Returns PJ_FALSE if the regc refused it, leaving reg_contact as it was.
  */
-static void update_regc_contact(pjsua_acc *acc, pj_bool_t push)
+static pj_bool_t update_regc_contact(pjsua_acc *acc, pj_bool_t push)
 {
     pjsua_acc_config *acc_cfg = &acc->cfg;
     pj_bool_t need_outbound = PJ_FALSE;
@@ -2314,8 +2315,10 @@ done:
                          status);
             acc->reg_contact = prev_contact;
             acc->rfc5626_status = prev_status;
+            return PJ_FALSE;
         }
     }
+    return PJ_TRUE;
 }
 
 /* Check if IP is private IP address */
@@ -2574,6 +2577,7 @@ static pj_bool_t acc_check_nat_addr(pjsua_acc *acc,
         pj_bool_t secure;
         pjsip_contact_hdr *new_hdr;
         pj_in6_addr v6_addr;
+        pj_str_t prev_contact;
 
         secure = pjsip_transport_get_flag_from_type(tp->key.type) &
                  PJSIP_TRANSPORT_SECURE;
@@ -2659,10 +2663,16 @@ static pj_bool_t acc_check_nat_addr(pjsua_acc *acc,
             destroy_regc(acc, PJ_TRUE);
         }
 
+        prev_contact = acc->contact;
         pj_strdup2_with_null(acc->pool, &acc->contact, tmp);
 
-        update_regc_contact(acc, contact_rewrite_method ==
-                                 PJSUA_CONTACT_REWRITE_NO_UNREG);
+        if (!update_regc_contact(acc, contact_rewrite_method ==
+                                      PJSUA_CONTACT_REWRITE_NO_UNREG))
+        {
+            acc->contact = prev_contact;
+            pj_pool_release(pool);
+            return PJ_FALSE;
+        }
 
         /* Always update, by https://github.com/pjsip/pjproject/issues/864. */
         /* Since the Via address will now be overwritten to the correct
@@ -5425,14 +5435,12 @@ static void auto_rereg_timer_cb(pj_timer_heap_t *th, pj_timer_entry *te)
                     goto on_return;
                 }
             } else {
-                if (acc->contact.slen < tmp_contact.slen) {
-                    pj_strdup_with_null(acc->pool, &acc->contact,
-                                        &tmp_contact);
-                } else {
-                    pj_strncpy_with_null(&acc->contact, &tmp_contact,
-                                         PJSIP_MAX_URL_SIZE);
-                }
-                update_regc_contact(acc, PJ_TRUE);
+                /* A new buffer, so the old Contact survives a refusal */
+                pj_str_t prev_contact = acc->contact;
+
+                pj_strdup_with_null(acc->pool, &acc->contact, &tmp_contact);
+                if (!update_regc_contact(acc, PJ_TRUE))
+                    acc->contact = prev_contact;
             }
         }
         pj_pool_release(pool);
@@ -5692,12 +5700,17 @@ pj_status_t pjsua_acc_update_contact_on_ip_change(pjsua_acc *acc)
 
                 status = pjsua_regc_init(acc->index);
                 if (status == PJ_SUCCESS) {
+                    pj_status_t rc = PJ_SUCCESS;
+
                     if (need_unreg || no_unreg)
-                        pjsip_regc_update_contact(acc->regc, 1,
-                                                  &old_reg_contact);
-                    if (no_unreg)
-                        pjsip_regc_update_contact(acc->regc, 1,
-                                                  &acc->reg_contact);
+                        rc = pjsip_regc_update_contact(acc->regc, 1,
+                                                       &old_reg_contact);
+                    if (rc == PJ_SUCCESS && no_unreg)
+                        rc = pjsip_regc_update_contact(acc->regc, 1,
+                                                       &acc->reg_contact);
+                    if (rc != PJ_SUCCESS)
+                        pjsua_perror(THIS_FILE, "Failed updating registration "
+                                                "Contact", rc);
                     status = pjsua_acc_set_registration(acc->index, !need_unreg);
                     if (status == PJ_SUCCESS) {
                         return status;
