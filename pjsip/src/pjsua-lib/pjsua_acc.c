@@ -5708,12 +5708,16 @@ pj_status_t pjsua_acc_update_contact_on_ip_change(pjsua_acc *acc)
                     if (rc == PJ_SUCCESS && no_unreg)
                         rc = pjsip_regc_update_contact(acc->regc, 1,
                                                        &acc->reg_contact);
-                    if (rc != PJ_SUCCESS)
+                    if (rc != PJ_SUCCESS) {
                         pjsua_perror(THIS_FILE, "Failed updating registration "
                                                 "Contact", rc);
-                    status = pjsua_acc_set_registration(acc->index, !need_unreg);
-                    if (status == PJ_SUCCESS) {
-                        return status;
+                        status = rc;
+                    } else {
+                        status = pjsua_acc_set_registration(acc->index,
+                                                            !need_unreg);
+                        if (status == PJ_SUCCESS) {
+                            return status;
+                        }
                     }
                 }
             }
