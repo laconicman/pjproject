@@ -279,7 +279,8 @@ static void init_outbound_setting(pjsua_acc *acc)
         acc->rfc5626_regprm.slen = len;
     }
 
-    acc->rfc5626_status = OUTBOUND_WANTED;
+    if (acc_cfg->use_rfc5626)
+        acc->rfc5626_status = OUTBOUND_WANTED;
 }
 
 /* Forget a 439 recorded against a first hop we may no longer be talking to,
@@ -532,7 +533,7 @@ static pj_status_t initialize_acc(unsigned acc_id)
     /* If SIP outbound is enabled, generate instance and reg ID if they are
      * not specified
      */
-    if (acc_cfg->use_rfc5626) {
+    if (acc_cfg->use_rfc5626 || acc_cfg->reg_always_use_instance_id) {
         init_outbound_setting(acc);
     }
 
@@ -1807,11 +1808,14 @@ PJ_DEF(pj_status_t) pjsua_acc_modify( pjsua_acc_id acc_id,
 
     /* SIP outbound setting */
     if (acc->cfg.use_rfc5626 != cfg->use_rfc5626 ||
+        acc->cfg.reg_always_use_instance_id !=
+            cfg->reg_always_use_instance_id ||
         pj_strcmp(&acc->cfg.rfc5626_instance_id, &cfg->rfc5626_instance_id) ||
         pj_strcmp(&acc->cfg.rfc5626_reg_id, &cfg->rfc5626_reg_id))
     {   
         if (acc->cfg.use_rfc5626 != cfg->use_rfc5626)
             acc->cfg.use_rfc5626 = cfg->use_rfc5626;
+        acc->cfg.reg_always_use_instance_id = cfg->reg_always_use_instance_id;
 
         if (pj_strcmp(&acc->cfg.rfc5626_instance_id,
                       &cfg->rfc5626_instance_id)) 
@@ -2157,6 +2161,7 @@ static pj_bool_t update_regc_contact(pjsua_acc *acc, pj_bool_t push)
 {
     pjsua_acc_config *acc_cfg = &acc->cfg;
     pj_bool_t need_outbound = PJ_FALSE;
+    pj_bool_t need_instance;
     pj_str_t prev_contact = acc->reg_contact;
     unsigned prev_status = acc->rfc5626_status;
     const pj_str_t tcp_param = pj_str(";transport=tcp");
@@ -2186,6 +2191,8 @@ static pj_bool_t update_regc_contact(pjsua_acc *acc, pj_bool_t push)
     need_outbound = PJ_TRUE;
 
 done:
+    /* +sip.instance is valid without reg-id (RFC 5626 section 6) */
+    need_instance = need_outbound || acc_cfg->reg_always_use_instance_id;
     {
         pj_ssize_t len;
         pj_str_t reg_contact;
@@ -2195,8 +2202,8 @@ done:
               acc->cfg.contact_params.slen +
               acc->cfg.reg_contact_params.slen +
               acc->cfg.reg_contact_uri_params.slen +
-              (need_outbound?
-               (acc->rfc5626_instprm.slen + acc->rfc5626_regprm.slen): 0) +
+              (need_outbound? acc->rfc5626_regprm.slen: 0) +
+              (need_instance? acc->rfc5626_instprm.slen: 0) +
               5; /* allowance */
         if (len > acc->contact.slen) {
             reg_contact.ptr = (char*) pj_pool_alloc(acc->pool, len);
@@ -2272,10 +2279,11 @@ done:
                  * +sip.instance and reg-id parameters.
                  */
                 pj_strcat(&reg_contact, &acc->rfc5626_regprm);
-                pj_strcat(&reg_contact, &acc->rfc5626_instprm);
             } else {
                 acc->rfc5626_status = OUTBOUND_NA;
             }
+            if (need_instance)
+                pj_strcat(&reg_contact, &acc->rfc5626_instprm);
 
             /* Contact params */
             pj_strcat(&reg_contact, &acc->cfg.reg_contact_params);

@@ -846,6 +846,18 @@ struct AccountNatConfig : public PersistentObject
     string              sipOutboundRegId;
 
     /**
+     * Send the "+sip.instance" Contact parameter in REGISTER also when SIP
+     * outbound is not in use: over UDP, with sipOutboundUse disabled, when
+     * the registrar does not confirm outbound, or after a 439 response. The
+     * "reg-id" parameter is still sent only while outbound is requested.
+     * The value is taken from sipOutboundInstanceId, which should then be
+     * set to a URN unique to the device.
+     *
+     * Default: false
+     */
+    bool                sipInstanceIdAlwaysUse;
+
+    /**
      * Set the interval for periodic keep-alive transmission for this account.
      * If this value is zero, keep-alive will be disabled for this account.
      * The keep-alive transmission will be sent to the registrar's address,
@@ -889,6 +901,7 @@ public:
       viaRewriteUse(PJ_TRUE),
       sdpNatRewriteUse(PJ_FALSE),
       sipOutboundUse(PJ_TRUE),
+      sipInstanceIdAlwaysUse(false),
       udpKaIntervalSec(15),
       udpKaData("\r\n")
     {
