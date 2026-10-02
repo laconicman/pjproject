@@ -4848,6 +4848,20 @@ typedef struct pjsua_acc_config
     pj_str_t         rfc5626_reg_id;
 
     /**
+     * Send the "+sip.instance" Contact parameter in REGISTER also when SIP
+     * outbound is not in use: over UDP, with use_rfc5626 disabled, when the
+     * registrar does not confirm outbound, or after a 439 response. The
+     * "reg-id" parameter is still sent only while outbound is requested.
+     * A registrar may use the instance ID to recognize the device across
+     * registrations (RFC 5626 section 6, RFC 5627). The value is taken from
+     * rfc5626_instance_id, which should then be set to a URN unique to the
+     * device.
+     *
+     * Default: PJ_FALSE
+     */
+    pj_bool_t        reg_always_use_instance_id;
+
+    /**
      * Set the interval for periodic keep-alive transmission for this account.
      * If this value is zero, keep-alive will be disabled for this account.
      * The keep-alive transmission will be sent to the registrar's address,

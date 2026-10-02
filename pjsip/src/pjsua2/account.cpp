@@ -505,6 +505,11 @@ void AccountNatConfig::readObject(const ContainerNode &node)
     /* Append new fields at the end, optional for older config files */
     if (this_node.hasUnread() && this_node.unreadName() == "TlsConfig")
         NODE_READ_OBJ ( this_node, turnTlsConfig);
+    if (this_node.hasUnread() &&
+        this_node.unreadName() == "sipInstanceIdAlwaysUse")
+    {
+        NODE_READ_BOOL( this_node, sipInstanceIdAlwaysUse);
+    }
 }
 
 void AccountNatConfig::writeObject(ContainerNode &node) const
@@ -544,6 +549,7 @@ void AccountNatConfig::writeObject(ContainerNode &node) const
     NODE_WRITE_INT     ( this_node, contactUseSrcPort);
     NODE_WRITE_STRINGV  (this_node, iceManualHost);
     NODE_WRITE_OBJ     ( this_node, turnTlsConfig);
+    NODE_WRITE_BOOL    ( this_node, sipInstanceIdAlwaysUse);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -827,6 +833,7 @@ void AccountConfig::toPj(pjsua_acc_config &ret) const
     ret.use_rfc5626             = natConfig.sipOutboundUse;
     ret.rfc5626_instance_id     = str2Pj(natConfig.sipOutboundInstanceId);
     ret.rfc5626_reg_id          = str2Pj(natConfig.sipOutboundRegId);
+    ret.reg_always_use_instance_id = natConfig.sipInstanceIdAlwaysUse;
     ret.ka_interval             = natConfig.udpKaIntervalSec;
     ret.ka_data                 = str2Pj(natConfig.udpKaData);
 
@@ -1044,6 +1051,7 @@ void AccountConfig::fromPj(const pjsua_acc_config &prm,
     natConfig.sipOutboundUse    = prm.use_rfc5626;
     natConfig.sipOutboundInstanceId = pj2Str(prm.rfc5626_instance_id);
     natConfig.sipOutboundRegId  = pj2Str(prm.rfc5626_reg_id);
+    natConfig.sipInstanceIdAlwaysUse = PJ2BOOL(prm.reg_always_use_instance_id);
     natConfig.udpKaIntervalSec  = prm.ka_interval;
     natConfig.udpKaData         = pj2Str(prm.ka_data);
 
