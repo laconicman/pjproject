@@ -2147,15 +2147,20 @@ PJ_DEF(pj_status_t) pjsua_acc_set_online_status2( pjsua_acc_id acc_id,
     return PJ_SUCCESS;
 }
 
-/* Create reg_contact, adding SIP outbound params and other REGISTER specific
- * Contact params, i.e: reg_contact_params, reg_contact_uri_params.
+/* Create reg_contact from new_contact (NULL: acc->contact), adding SIP
+ * outbound params and other REGISTER specific Contact params, i.e:
+ * reg_contact_params, reg_contact_uri_params.
  * With push, also load it into the regc; pass PJ_FALSE where the regc takes
  * it from pjsip_regc_init() or regc_tsx_cb()'s param->contact instead.
- * Returns PJ_FALSE if the regc refused it, leaving reg_contact as it was.
+ * Returns PJ_FALSE if the regc refused it, leaving the account as it was;
+ * otherwise new_contact becomes acc->contact.
  */
-static pj_bool_t update_regc_contact(pjsua_acc *acc, pj_bool_t push)
+static pj_bool_t update_regc_contact(pjsua_acc *acc,
+                                     const pj_str_t *new_contact,
+                                     pj_bool_t push)
 {
     pjsua_acc_config *acc_cfg = &acc->cfg;
+    const pj_str_t *contact = new_contact ? new_contact : &acc->contact;
     pj_bool_t need_outbound = PJ_FALSE;
     pj_str_t prev_contact = acc->reg_contact;
     unsigned prev_status = acc->rfc5626_status;
@@ -2173,8 +2178,8 @@ static pj_bool_t update_regc_contact(pjsua_acc *acc, pj_bool_t push)
     if (acc->rfc5626_status == OUTBOUND_NA)
         goto done;
 
-    if (pj_stristr(&acc->contact, &tcp_param)==NULL &&
-        pj_stristr(&acc->contact, &tls_param)==NULL)
+    if (pj_stristr(contact, &tcp_param)==NULL &&
+        pj_stristr(contact, &tls_param)==NULL)
     {
         /* Currently we can only do SIP outbound for TCP
          * and TLS.
@@ -2191,20 +2196,20 @@ done:
         pj_str_t reg_contact;
 
         acc->rfc5626_status = OUTBOUND_WANTED;
-        len = acc->contact.slen +
+        len = contact->slen +
               acc->cfg.contact_params.slen +
               acc->cfg.reg_contact_params.slen +
               acc->cfg.reg_contact_uri_params.slen +
               (need_outbound?
                (acc->rfc5626_instprm.slen + acc->rfc5626_regprm.slen): 0) +
               5; /* allowance */
-        if (len > acc->contact.slen) {
+        {
             reg_contact.ptr = (char*) pj_pool_alloc(acc->pool, len);
 
             /* Must be NULL terminated: the buffer is parsed below and by
              * pjsip_regc, and the parser requires a NULL terminated input.
              */
-            pj_strncpy_with_null(&reg_contact, &acc->contact, len);
+            pj_strncpy_with_null(&reg_contact, contact, len);
 
             /* Contact URI params */
             if (acc->cfg.reg_contact_uri_params.slen) {
@@ -2254,13 +2259,13 @@ done:
                 }
 
                 if (tmp_len <= 0) {
-                    /* Leave reg_contact as the plain copy of acc->contact */
+                    /* Leave reg_contact as the plain copy of the Contact */
                     PJ_LOG(1,(THIS_FILE,
                               "Unable to apply registration Contact URI "
                               "params of acc %d to Contact '%.*s'",
-                              acc->index, (int)acc->contact.slen,
-                              acc->contact.ptr));
-                    pj_strncpy_with_null(&reg_contact, &acc->contact, len);
+                              acc->index, (int)contact->slen,
+                              contact->ptr));
+                    pj_strncpy_with_null(&reg_contact, contact, len);
                 }
             }
 
@@ -2294,14 +2299,6 @@ done:
                       acc->index,
                       (int)acc->reg_contact.slen,
                       acc->reg_contact.ptr));
-
-        } else {
-             /* Outbound is not needed/wanted for the account and there's
-              * no custom registration Contact params. acc->reg_contact
-              * is set to the same as acc->contact.
-              */
-             acc->reg_contact = acc->contact;
-             acc->rfc5626_status = OUTBOUND_NA;
         }
     }
 
@@ -2318,6 +2315,8 @@ done:
             return PJ_FALSE;
         }
     }
+    if (new_contact)
+        pj_strdup_with_null(acc->pool, &acc->contact, new_contact);
     return PJ_TRUE;
 }
 
@@ -2577,7 +2576,7 @@ static pj_bool_t acc_check_nat_addr(pjsua_acc *acc,
         pj_bool_t secure;
         pjsip_contact_hdr *new_hdr;
         pj_in6_addr v6_addr;
-        pj_str_t prev_contact;
+        pj_str_t new_contact;
 
         secure = pjsip_transport_get_flag_from_type(tp->key.type) &
                  PJSIP_TRANSPORT_SECURE;
@@ -2663,13 +2662,10 @@ static pj_bool_t acc_check_nat_addr(pjsua_acc *acc,
             destroy_regc(acc, PJ_TRUE);
         }
 
-        prev_contact = acc->contact;
-        pj_strdup2_with_null(acc->pool, &acc->contact, tmp);
-
-        if (!update_regc_contact(acc, contact_rewrite_method ==
-                                      PJSUA_CONTACT_REWRITE_NO_UNREG))
+        if (!update_regc_contact(acc, pj_cstr(&new_contact, tmp),
+                                 contact_rewrite_method ==
+                                 PJSUA_CONTACT_REWRITE_NO_UNREG))
         {
-            acc->contact = prev_contact;
             pj_pool_release(pool);
             return PJ_FALSE;
         }
@@ -3024,7 +3020,7 @@ static void update_rfc5626_status(pjsua_acc *acc, pjsip_rx_data *rdata)
 on_return:
     /* Unconfirmed outbound is not in use (RFC 5626 section 6): drop reg-id */
     if (was_outbound && acc->rfc5626_status == OUTBOUND_NA)
-        update_regc_contact(acc, PJ_TRUE);
+        update_regc_contact(acc, NULL, PJ_TRUE);
     PJ_LOG(4,(THIS_FILE, "SIP outbound status for acc %d is %s",
                          acc->index, (acc->rfc5626_status==OUTBOUND_ACTIVE?
                                          "active": "not active")));
@@ -3494,8 +3490,7 @@ static pj_status_t pjsua_regc_init(int acc_id)
             goto on_return;
         }
 
-        pj_strdup_with_null(acc->pool, &acc->contact, &tmp_contact);
-        update_regc_contact(acc, PJ_FALSE);
+        update_regc_contact(acc, &tmp_contact, PJ_FALSE);
     }
 
     status = pjsip_regc_init( acc->regc,
@@ -5435,12 +5430,7 @@ static void auto_rereg_timer_cb(pj_timer_heap_t *th, pj_timer_entry *te)
                     goto on_return;
                 }
             } else {
-                /* A new buffer, so the old Contact survives a refusal */
-                pj_str_t prev_contact = acc->contact;
-
-                pj_strdup_with_null(acc->pool, &acc->contact, &tmp_contact);
-                if (!update_regc_contact(acc, PJ_TRUE))
-                    acc->contact = prev_contact;
+                update_regc_contact(acc, &tmp_contact, PJ_TRUE);
             }
         }
         pj_pool_release(pool);
