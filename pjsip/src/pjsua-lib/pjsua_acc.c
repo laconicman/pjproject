@@ -2152,8 +2152,9 @@ PJ_DEF(pj_status_t) pjsua_acc_set_online_status2( pjsua_acc_id acc_id,
  * reg_contact_params, reg_contact_uri_params.
  * With push, also load it into the regc; pass PJ_FALSE where the regc takes
  * it from pjsip_regc_init() or regc_tsx_cb()'s param->contact instead.
- * Returns PJ_FALSE if the regc refused it, leaving the account as it was;
- * otherwise new_contact becomes acc->contact.
+ * Returns PJ_FALSE if the push was refused, leaving the account as it was.
+ * Otherwise new_contact becomes acc->contact; without push, before the regc
+ * has seen it.
  */
 static pj_bool_t update_regc_contact(pjsua_acc *acc,
                                      const pj_str_t *new_contact,
@@ -2162,7 +2163,7 @@ static pj_bool_t update_regc_contact(pjsua_acc *acc,
     pjsua_acc_config *acc_cfg = &acc->cfg;
     const pj_str_t *contact = new_contact ? new_contact : &acc->contact;
     pj_bool_t need_outbound = PJ_FALSE;
-    pj_str_t prev_contact = acc->reg_contact;
+    pj_str_t prev_reg_contact = acc->reg_contact;
     unsigned prev_status = acc->rfc5626_status;
     const pj_str_t tcp_param = pj_str(";transport=tcp");
     const pj_str_t tls_param = pj_str(";transport=tls");
@@ -2195,7 +2196,6 @@ done:
         pj_ssize_t len;
         pj_str_t reg_contact;
 
-        acc->rfc5626_status = OUTBOUND_WANTED;
         len = contact->slen +
               acc->cfg.contact_params.slen +
               acc->cfg.reg_contact_params.slen +
@@ -2203,103 +2203,95 @@ done:
               (need_outbound?
                (acc->rfc5626_instprm.slen + acc->rfc5626_regprm.slen): 0) +
               5; /* allowance */
-        {
-            reg_contact.ptr = (char*) pj_pool_alloc(acc->pool, len);
+        reg_contact.ptr = (char*) pj_pool_alloc(acc->pool, len);
 
-            /* Must be NULL terminated: the buffer is parsed below and by
-             * pjsip_regc, and the parser requires a NULL terminated input.
+        /* Must be NULL terminated: the buffer is parsed below and by
+         * pjsip_regc, and the parser requires a NULL terminated input.
+         */
+        pj_strncpy_with_null(&reg_contact, contact, len);
+
+        /* Contact URI params */
+        if (acc->cfg.reg_contact_uri_params.slen) {
+            pj_pool_t *pool;
+            pjsip_contact_hdr *contact_hdr;
+            /* Only ever handed to pjsip_uri_print(), which dispatches
+             * on the URI's own vptr, so this must not be narrowed to
+             * pjsip_sip_uri*: a Contact may legitimately hold another
+             * scheme and no SIP specific field is read here.
              */
-            pj_strncpy_with_null(&reg_contact, contact, len);
+            pjsip_uri *uri = NULL;
+            pj_str_t uri_param = acc->cfg.reg_contact_uri_params;
+            const pj_str_t STR_CONTACT = { "Contact", 7 };
+            char tmp_uri[PJSIP_MAX_URL_SIZE];
+            pj_ssize_t tmp_len = -1;
 
-            /* Contact URI params */
-            if (acc->cfg.reg_contact_uri_params.slen) {
-                pj_pool_t *pool;
-                pjsip_contact_hdr *contact_hdr;
-                /* Only ever handed to pjsip_uri_print(), which dispatches
-                 * on the URI's own vptr, so this must not be narrowed to
-                 * pjsip_sip_uri*: a Contact may legitimately hold another
-                 * scheme and no SIP specific field is read here.
-                 */
-                pjsip_uri *uri = NULL;
-                pj_str_t uri_param = acc->cfg.reg_contact_uri_params;
-                const pj_str_t STR_CONTACT = { "Contact", 7 };
-                char tmp_uri[PJSIP_MAX_URL_SIZE];
-                pj_ssize_t tmp_len = -1;
+            /* Get the URI string */
+            pool = pjsua_pool_create("tmp", 512, 512);
+            contact_hdr = (pjsip_contact_hdr*)
+                          pjsip_parse_hdr(pool, &STR_CONTACT,
+                                          reg_contact.ptr,
+                                          reg_contact.slen, NULL);
+            if (contact_hdr && contact_hdr->uri)
+                uri = (pjsip_uri*)pjsip_uri_get_uri(contact_hdr->uri);
+            if (uri) {
+                tmp_len = pjsip_uri_print(PJSIP_URI_IN_CONTACT_HDR,
+                                          uri, tmp_uri,
+                                          sizeof(tmp_uri));
+            }
+            pj_pool_release(pool);
 
-                /* Get the URI string */
-                pool = pjsua_pool_create("tmp", 512, 512);
-                contact_hdr = (pjsip_contact_hdr*)
-                              pjsip_parse_hdr(pool, &STR_CONTACT,
-                                              reg_contact.ptr,
-                                              reg_contact.slen, NULL);
-                if (contact_hdr && contact_hdr->uri)
-                    uri = (pjsip_uri*)pjsip_uri_get_uri(contact_hdr->uri);
-                if (uri) {
-                    tmp_len = pjsip_uri_print(PJSIP_URI_IN_CONTACT_HDR,
-                                              uri, tmp_uri,
-                                              sizeof(tmp_uri));
-                }
-                pj_pool_release(pool);
+            if (tmp_len > 0) {
+                pj_ssize_t new_len;
 
-                if (tmp_len > 0) {
-                    pj_ssize_t new_len;
-
-                    /* Regenerate Contact */
-                    new_len = pj_ansi_snprintf(
-                                            reg_contact.ptr, len,
-                                            "<%.*s%.*s>%.*s",
-                                            (int)tmp_len, tmp_uri,
-                                            (int)uri_param.slen, uri_param.ptr,
-                                            (int)acc->cfg.contact_params.slen,
-                                            acc->cfg.contact_params.ptr);
-                    if (new_len > 0 && new_len < len)
-                        reg_contact.slen = new_len;
-                    else
-                        tmp_len = -1;
-                }
-
-                if (tmp_len <= 0) {
-                    /* Leave reg_contact as the plain copy of the Contact */
-                    PJ_LOG(1,(THIS_FILE,
-                              "Unable to apply registration Contact URI "
-                              "params of acc %d to Contact '%.*s'",
-                              acc->index, (int)contact->slen,
-                              contact->ptr));
-                    pj_strncpy_with_null(&reg_contact, contact, len);
-                }
+                /* Regenerate Contact */
+                new_len = pj_ansi_snprintf(
+                                        reg_contact.ptr, len,
+                                        "<%.*s%.*s>%.*s",
+                                        (int)tmp_len, tmp_uri,
+                                        (int)uri_param.slen, uri_param.ptr,
+                                        (int)acc->cfg.contact_params.slen,
+                                        acc->cfg.contact_params.ptr);
+                if (new_len > 0 && new_len < len)
+                    reg_contact.slen = new_len;
+                else
+                    tmp_len = -1;
             }
 
-            /* Outbound */
-            if (need_outbound) {
-                acc->rfc5626_status = OUTBOUND_WANTED;
-
-                /* Need to use outbound, append the contact with
-                 * +sip.instance and reg-id parameters.
-                 */
-                pj_strcat(&reg_contact, &acc->rfc5626_regprm);
-                pj_strcat(&reg_contact, &acc->rfc5626_instprm);
-            } else {
-                acc->rfc5626_status = OUTBOUND_NA;
+            if (tmp_len <= 0) {
+                /* Leave reg_contact as the plain copy of the Contact */
+                PJ_LOG(1,(THIS_FILE,
+                          "Unable to apply registration Contact URI "
+                          "params of acc %d to Contact '%.*s'",
+                          acc->index, (int)contact->slen,
+                          contact->ptr));
+                pj_strncpy_with_null(&reg_contact, contact, len);
             }
-
-            /* Contact params */
-            pj_strcat(&reg_contact, &acc->cfg.reg_contact_params);
-
-            /* pj_strcat() does not NULL terminate, and the buffer is later
-             * parsed by pjsip_regc. The 'len' allowance guarantees room.
-             */
-            pj_assert(reg_contact.slen < len);
-            if (reg_contact.slen < len)
-                reg_contact.ptr[reg_contact.slen] = '\0';
-
-            acc->reg_contact = reg_contact;
-
-            PJ_LOG(4,(THIS_FILE,
-                      "Contact for acc %d updated: %.*s",
-                      acc->index,
-                      (int)acc->reg_contact.slen,
-                      acc->reg_contact.ptr));
         }
+
+        /* Outbound */
+        if (need_outbound) {
+            acc->rfc5626_status = OUTBOUND_WANTED;
+
+            /* Need to use outbound, append the contact with
+             * +sip.instance and reg-id parameters.
+             */
+            pj_strcat(&reg_contact, &acc->rfc5626_regprm);
+            pj_strcat(&reg_contact, &acc->rfc5626_instprm);
+        } else {
+            acc->rfc5626_status = OUTBOUND_NA;
+        }
+
+        /* Contact params */
+        pj_strcat(&reg_contact, &acc->cfg.reg_contact_params);
+
+        /* pj_strcat() does not NULL terminate, and the buffer is later
+         * parsed by pjsip_regc. The 'len' allowance guarantees room.
+         */
+        pj_assert(reg_contact.slen < len);
+        if (reg_contact.slen < len)
+            reg_contact.ptr[reg_contact.slen] = '\0';
+
+        acc->reg_contact = reg_contact;
     }
 
     if (push && acc->regc) {
@@ -2307,16 +2299,22 @@ done:
 
         status = pjsip_regc_update_contact(acc->regc, 1, &acc->reg_contact);
         if (status != PJ_SUCCESS) {
-            /* set_contact() validates first: the regc kept prev_contact */
+            /* set_contact() validates first: the regc kept prev_reg_contact */
             pjsua_perror(THIS_FILE, "Failed updating registration Contact",
                          status);
-            acc->reg_contact = prev_contact;
+            acc->reg_contact = prev_reg_contact;
             acc->rfc5626_status = prev_status;
             return PJ_FALSE;
         }
     }
-    if (new_contact)
+    if (new_contact && new_contact != &acc->contact)
         pj_strdup_with_null(acc->pool, &acc->contact, new_contact);
+
+    PJ_LOG(4,(THIS_FILE,
+              "Contact for acc %d updated: %.*s",
+              acc->index,
+              (int)acc->reg_contact.slen,
+              acc->reg_contact.ptr));
     return PJ_TRUE;
 }
 
@@ -5430,6 +5428,7 @@ static void auto_rereg_timer_cb(pj_timer_heap_t *th, pj_timer_entry *te)
                     goto on_return;
                 }
             } else {
+                /* On refusal, re-register with the Contact the regc kept */
                 update_regc_contact(acc, &tmp_contact, PJ_TRUE);
             }
         }
